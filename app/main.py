@@ -3,10 +3,11 @@ import logging
 import ipaddress
 import socket
 import asyncio
+from asyncio.exceptions import CancelledError
 
 
 log = logging.getLogger(__name__)
-log.setLevel(logging.INFO)
+log.setLevel(logging.DEBUG)
 console_log = logging.StreamHandler()
 formatter = formatter = logging.Formatter("%(asctime)s - [%(name)s] - %(levelname)s - %(message)s")
 console_log.setFormatter(formatter)
@@ -43,6 +44,9 @@ class WintunTunnel():
         self.adapter = None
         self.session = None
         self.read_event = None
+        self.transport = None
+        self.async_loop = None
+        self.running = False
     
     def up(self):
         row = ffi.new('MIB_UNICASTIPADDRESS_ROW *')
@@ -53,7 +57,7 @@ class WintunTunnel():
         iphlp.InitializeUnicastIpAddressEntry(row)
 
         wintun.WintunGetAdapterLUID(self.adapter, luid)
-        log.info(luid.Value)
+        log.info('LUID: %s', luid.Value)
         self.session = wintun.WintunStartSession(self.adapter, 0x4000000)
         self.read_event = wintun.WintunGetReadWaitEvent(self.session)
 
@@ -68,39 +72,52 @@ class WintunTunnel():
         result = iphlp.CreateUnicastIpAddressEntry(row)
         log.info(f"Код ответа Windows API (Create IP): {result}")
     
-    def run_loop(self):
+    def _inject_packet(self, data):
+        send_ptr = wintun.WintunAllocateSendPacket(self.session, len(data))
+        ffi.memmove(send_ptr, data, len(data))
+        wintun.WintunSendPacket(self.session, send_ptr)
+        log.info('Пакет получен.')
+
+    def _process_outgoing_packet(self):
+        packet_size = ffi.new('DWORD *')
         while 1:
+            packet_addr = wintun.WintunReceivePacket(self.session, packet_size)
+            if packet_addr == ffi.NULL or packet_addr is None:
+                break
+            packet_bytes = bytearray(ffi.buffer(packet_addr, packet_size[0]))
+            log.debug('Пакет %s перехвачен.', len(packet_bytes))
+            wintun.WintunReleaseReceivePacket(self.session, packet_addr)
+            if hasattr(self, 'transport') and self.transport is not None:
+                self.async_loop.call_soon_threadsafe(self.transport.sendto, bytes(packet_bytes), self.server_address)
+            else: 
+                log.info('Создание транспорта...')
+                pass
+    
+    def _loop(self):
+        self.running = True
+        while self.running:
             if kernel.WaitForSingleObject(self.read_event, 100) == 0:
-                while 1:
-                    packet_size = ffi.new('DWORD *')
-                    packet_addr = wintun.WintunReceivePacket(self.session, packet_size)
-                    if packet_addr == ffi.NULL or packet_addr is None:
-                        break
-                    packet_bytes = bytearray(ffi.buffer(packet_addr, packet_size[0]))
-                    wintun.WintunReleaseReceivePacket(self.session, packet_addr)
-                    if packet_bytes[9] != 1:
-                        continue
-                    send_packet = packet_bytes
-                    src_ip = packet_bytes[12:16]
-                    dst_ip = packet_bytes[16:20]
-                    send_packet[12:16] = dst_ip
-                    send_packet[16:20] = src_ip
-                    send_packet[20] = 0
-                    send_packet[22] = 0
-                    send_packet[23] = 0
-                    my_checksum = calculate_checksum(send_packet[20:])
-                    send_packet[22] = (my_checksum >> 8) & 0xff
-                    send_packet[23] = my_checksum & 0xff
-                    send_ptr = wintun.WintunAllocateSendPacket(self.session, len(send_packet))
-                    ffi.memmove(send_ptr, send_packet, len(send_packet))
-                    wintun.WintunSendPacket(self.session, send_ptr)
-                
+                self.process_outgoing_packet()
             else:
                 continue
+                    
+    async def run_loop(self):
+        self.async_loop = asyncio.get_running_loop()
+        try:
+            self.up()
+            self.transport, protocol = await self.async_loop.create_datagram_endpoint(lambda: VPNClientProtocol(self), local_addr=('0.0.0.0', 0))
+            await self.async_loop.run_in_executor(None, self.loop)
+        except KeyboardInterrupt, CancelledError:
+            log.info('Завершение работы...')
+        finally:
+            self.running = False
+            await asyncio.sleep(0.1)
+            if self.transport:
+                self.transport.close()
+            self.down()
 
-    def dowm(self):
+    def down(self):
         log.info('Очистка драйверов')
-
         if hasattr(self, 'session') and self.session:
             wintun.WintunEndSession(self.session)
         if hasattr(self, 'adapter') and self.adapter:
@@ -108,8 +125,6 @@ class WintunTunnel():
             wintun.WintunDeleteDriver()
         log.info('Очищено.')
 
-    def get_packet(self):
-        
 
 class VPNClientProtocol(asyncio.DatagramProtocol):
     def __init__(self, tunnel):
@@ -121,16 +136,9 @@ class VPNClientProtocol(asyncio.DatagramProtocol):
         log.info('Сокет клиента инициализирован.')
     
     def datagram_received(self, data, addr):
-        self.tunnel.get_packet(data)
+        self.tunnel.inject_packet(data)
 
-tunnel = WintunTunnel(ip_address='10.0.0.2', prefix_lenght=24, server_ip='1', server_port=2)
+tunnel = WintunTunnel(ip_address='10.0.0.2', prefix_lenght=24, server_ip='172.20.109.62', server_port=51820)
 
-try:
-    tunnel.up()
-    tunnel.run_loop()
-except KeyboardInterrupt:
-    log.info('Завершение...')
-finally:
-    tunnel.dowm()
-    log.info('Выключено.')
+asyncio.run(tunnel.run_loop())
 
