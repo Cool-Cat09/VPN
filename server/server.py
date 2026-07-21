@@ -25,7 +25,7 @@ class VPNServerProtocol(asyncio.DatagramProtocol):
     def __init__(self, tun):
         self.tun = tun
         self.transport = None
-        self.client = None
+        self.clients_addrs = dict()
 
     def connection_made(self, transport):
         self.transport = transport
@@ -33,7 +33,8 @@ class VPNServerProtocol(asyncio.DatagramProtocol):
     
     def datagram_received(self, data, addr):
         log.info('Пакет %i от %s', len(data), addr)
-        self.client = addr
+        client_ip = data[12:16]
+        self.clients_addrs[client_ip] = addr
         os.write(self.tun, data)
 
 async def main():
@@ -50,10 +51,11 @@ async def main():
     
     def handle_run_read():
         packet = os.read(tun, 2048)
-        log.info('Пакет %s получет', len(packet))
-        if protocol.client:
-            transport.sendto(packet, protocol.client)
-            log.info('Ответ отправлен по UDP обратно клиенту на %s.', protocol.client)
+        log.info('Пакет %s получен', len(packet))
+        client_addr = packet[16:20]
+        if protocol.clients_addrs.get(client_addr):
+            transport.sendto(packet, protocol.clients_addrs[client_addr])
+            log.info('Ответ отправлен по UDP обратно клиенту на %s.', protocol.clients_addrs)
         else:
             log.warning('Пакет из TUN получен, но адрес Windows-клиента еще неизвестен (нет входящих UDP сообщений).')
 
@@ -62,12 +64,13 @@ async def main():
     try:
         while 1:
             await asyncio.sleep(3600)
-    except KeyboardInterrupt:
-        log.info('Завершение...')
     finally:
         loop.remove_reader(tun)
         transport.close()
         os.close(tun)
         log.info('Работа завершена.')
 
-asyncio.run(main())
+try:
+    asyncio.run(main())
+except KeyboardInterrupt:
+        log.info('Завершение...')

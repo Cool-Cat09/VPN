@@ -97,7 +97,7 @@ class WintunTunnel():
         self.running = True
         while self.running:
             if kernel.WaitForSingleObject(self.read_event, 100) == 0:
-                self.process_outgoing_packet()
+                self._process_outgoing_packet()
             else:
                 continue
                     
@@ -106,7 +106,7 @@ class WintunTunnel():
         try:
             self.up()
             self.transport, protocol = await self.async_loop.create_datagram_endpoint(lambda: VPNClientProtocol(self), local_addr=('0.0.0.0', 0))
-            await self.async_loop.run_in_executor(None, self.loop)
+            await self.async_loop.run_in_executor(None, self._loop)
         except KeyboardInterrupt, CancelledError:
             log.info('Завершение работы...')
         finally:
