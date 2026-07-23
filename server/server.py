@@ -8,7 +8,7 @@ import fcntl
 import os
 
 log = logging.getLogger(__name__)
-log.setLevel(logging.INFO)
+log.setLevel(logging.DEBUG)
 console_log = logging.StreamHandler()
 formatter = formatter = logging.Formatter("%(asctime)s - [%(name)s] - %(levelname)s - %(message)s")
 console_log.setFormatter(formatter)
@@ -48,10 +48,17 @@ class Server():
     async def up(self):
         loop = asyncio.get_running_loop()
         tun = await create_tun()
-        log.info("Автоматически активируем интерфейс tun0...")
-        os.system("ip link set dev tun0 up")
-        os.system("ip addr add 10.0.0.1/16 dev tun0")
-        log.info("Интерфейс tun0 готов к приему трафика.")
+        os.set_blocking(tun, False)
+        log.info('Автоматически активируем интерфейс tun0...')
+        os.system('sudo ip link set dev tun0 up')
+        os.system('sudo ip addr add 10.0.0.1 peer 10.0.0.2 dev tun0')
+        os.system('sudo ip route add 10.0.0.0/16 dev tun0')
+        os.system('sudo ip route add 10.0.0.1/16 dev tun0')
+        log.info('Интерфейс tun0 готов к приему трафика.')
+        for param in ["net.ipv4.conf.all.rp_filter", "net.ipv4.conf.default.rp_filter", "net.ipv4.conf.tun0.rp_filter"]:
+            proc = await asyncio.create_subprocess_exec("sysctl", "-w", f"{param}=0")
+            await proc.wait()
+        log.info("Проверка обратного пути (rp_filter) успешно отключена.")
         transport, protocol = await loop.create_datagram_endpoint(
             lambda: VPNServerProtocol(tun, self),
             local_addr=('0.0.0.0', 51820)
@@ -61,12 +68,13 @@ class Server():
         await self._create_session_id_pool()
         
         def _handle_run_read():
+            log.debug('Вызов handle_run_read.')
             data = os.read(tun, 2048)
             log.info('Пакет %s получен', len(data))
             client_addr = data[16:20]
             session = self.clients_addrs.get(client_addr)
             if session:
-                ip = session.get('local_ip')
+                ip = session.get('eth_ip')
                 counter = struct.pack('>Q', session.get('tx_counter'))
                 session['tx_counter'] = session.get('tx_counter') + 1
                 chacha = session.get('chacha')
@@ -74,7 +82,7 @@ class Server():
                 encrypted_data = chacha.encrypt(nonce, data, None)
                 packet = b'\x02' + struct.pack('>I', session['session_id']) + counter + encrypted_data
                 transport.sendto(packet, ip)
-                log.info('Ответ отправлен по UDP обратно клиенту на %s.', protocol.clients_addrs)
+                log.info('Ответ отправлен по UDP обратно клиенту на %s.', ip)
             else:
                 log.warning('Пакет из TUN получен, но адрес Windows-клиента еще неизвестен (нет входящих UDP сообщений).')
 
@@ -109,10 +117,10 @@ class VPNServerProtocol(asyncio.DatagramProtocol):
             chacha = ChaCha20Poly1305(shared_secret)
             client_addr: str = self.server.ip_pool.get_nowait()
             client_addr = socket.inet_aton(client_addr)
-            byted_client_addr = struct.pack('>4sB', client_addr, 16)
+            log.info(client_addr)
             byted_token = data[1:5]
             nonce = b'\x00\x00\x00\x00' + byted_token + b'\x00\x00\x00\x00'
-            encoded_client_addr = chacha.encrypt(nonce, byted_client_addr, None)
+            encoded_client_addr = chacha.encrypt(nonce, client_addr, None)
             session = self.server.sessions_id_pool.get_nowait()
             byted_session = struct.pack('>I', session)
             handshake = b'\x03' + byted_token + byted_session + server_byted_public_key + encoded_client_addr
@@ -129,9 +137,11 @@ class VPNServerProtocol(asyncio.DatagramProtocol):
             decrypted_packet = self.server.sessions_addrs[session]['chacha'].decrypt(nonce, encrypted_packet, None)
             self.server.sessions_addrs[session]['counter'] = decrypted_packet[1:9]
             self.server.sessions_addrs[session]['eth_ip'] = addr
+            log.debug(f'Расшифрованный пакет: {decrypted_packet}')
             log.info('Пакет %i от %s', len(data), addr)
+            log.debug('Запись в виртуальный сетевой адаптер.')
             os.write(self.tun, decrypted_packet)
-
+            log.debug('Запись прошла успешно.')
 server = Server()
 try:
     asyncio.run((server.up()))

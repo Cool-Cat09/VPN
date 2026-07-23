@@ -3,6 +3,7 @@ from cdef import kernel, iphlp, wintun, ffi
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from asyncio.exceptions import CancelledError
+import subprocess
 import ipaddress
 import logging
 import asyncio
@@ -81,10 +82,13 @@ class WintunTunnel():
         
         result = iphlp.CreateUnicastIpAddressEntry(row)
         log.info(f"Код ответа Windows API (Create IP): {result}")
+
+        os.system('route add 0.0.0.0 mask 128.0.0.0 10.0.0.1')
+        os.system('route add 128.0.0.0 mask 128.0.0.0 10.0.0.1')
     
     def _inject_packet(self, data):
         getted_counter = struct.unpack('>Q', data[5:13])[0]
-        if self.rx_counter < getted_counter:
+        if self.rx_counter <= getted_counter:
             self.rx_counter = getted_counter
             nonce = b'\x00\x00\x00\x00' + data[5:13]
             decoded_data = self.chacha.decrypt(nonce, data[13:], None)
@@ -102,6 +106,11 @@ class WintunTunnel():
             if packet_addr == ffi.NULL or packet_addr is None:
                 break
             packet_bytes = bytes(ffi.buffer(packet_addr, packet_size[0]))
+            version = packet_bytes[0] >> 4
+            if version != 4:
+                log.debug('Пришел пакет не IPv4.')
+                return
+            log.debug(packet_bytes)
             log.debug('Пакет %s перехвачен.', len(packet_bytes))
             wintun.WintunReleaseReceivePacket(self.session, packet_addr)
             if hasattr(self, 'transport') and self.transport is not None:
@@ -112,6 +121,7 @@ class WintunTunnel():
                 udp_payload = packet_type + self.session_id + counter + encrypted_packet
                 self.tx_counter += 1
                 self.async_loop.call_soon_threadsafe(self.transport.sendto, udp_payload, self.server_address)
+                log.debug('Пакет отправлен на сервер.')
             else: 
                 log.info('Создание транспорта...')
                 pass
@@ -145,7 +155,15 @@ class WintunTunnel():
                     server_public_key = X25519PublicKey.from_public_bytes(server_public_key_byted)
                     shared_secret = private_key.exchange(server_public_key)
                     self.chacha = ChaCha20Poly1305(shared_secret)
-                    os.system(f'New-NetIPAddress -InterfaceAlias {self.adapter_name} -IPAddress {decrypted_settings[41:]} -PrefixLength 16 -DefaultGateway 192.168.1.1')
+                    nonce = b'\x00\x00\x00\x00' + byted_token + b'\x00\x00\x00\x00'
+                    ip = self.chacha.decrypt(nonce, decrypted_settings[41:], None)
+                    ip = socket.inet_ntoa(ip)
+                    clean_ip = "".join(ip.split()).strip()
+                    log.info(ip)
+                    os.system(f'netsh interface ipv4 delete address name=ValetVPN address=10.0.0.2')
+                    set_command = f'netsh interface ipv4 set address name="ValetVPN" source=static {clean_ip} 255.255.0.0 10.0.0.1'
+                    os.system('netsh interface ipv4 set dns name="ValetVPN" static 8.8.8.8')
+                    subprocess.run(set_command, capture_output=True, text=True, shell=True)
                     log.info('Сессия установлена.')
                     await self.async_loop.run_in_executor(None, self._loop)
             except asyncio.TimeoutError:
