@@ -61,12 +61,18 @@ class Server():
         await self._create_session_id_pool()
         
         def _handle_run_read():
-            packet = os.read(tun, 2048)
-            log.info('Пакет %s получен', len(packet))
-            client_addr = packet[16:20]
-            session = self.sessions_addrs.get(client_addr)
+            data = os.read(tun, 2048)
+            log.info('Пакет %s получен', len(data))
+            client_addr = data[16:20]
+            session = self.clients_addrs.get(client_addr)
             if session:
-                ip = session.get('eth_ip')
+                ip = session.get('local_ip')
+                counter = struct.pack('>Q', session.get('tx_counter'))
+                session['tx_counter'] = session.get('tx_counter') + 1
+                chacha = session.get('chacha')
+                nonce = b'\x00\x00\x00\x00' + counter
+                encrypted_data = chacha.encrypt(nonce, data, None)
+                packet = b'\x02' + struct.pack('>I', session['session_id']) + counter + encrypted_data
                 transport.sendto(packet, ip)
                 log.info('Ответ отправлен по UDP обратно клиенту на %s.', protocol.clients_addrs)
             else:
@@ -111,7 +117,7 @@ class VPNServerProtocol(asyncio.DatagramProtocol):
             byted_session = struct.pack('>I', session)
             handshake = b'\x03' + byted_token + byted_session + server_byted_public_key + encoded_client_addr
             self.transport.sendto(handshake, addr)
-            client_info = {'chacha': chacha, 'local_ip': client_addr, 'eth_ip': addr, 'session_id': session, 'tx_counter': None} 
+            client_info = {'chacha': chacha, 'eth_ip': addr, 'local_ip': client_addr, 'session_id': session, 'tx_counter': 0} 
             self.server.clients_addrs[client_addr] = client_info
             self.server.sessions_addrs[session] = client_info
             log.info('Сессия установлена.')   
@@ -121,7 +127,8 @@ class VPNServerProtocol(asyncio.DatagramProtocol):
             session = struct.unpack('>I', byted_session)[0]
             encrypted_packet = data[13:]
             decrypted_packet = self.server.sessions_addrs[session]['chacha'].decrypt(nonce, encrypted_packet, None)
-            self.server.clients_addrs[addr] = {'counter': decrypted_packet[1:9]}
+            self.server.sessions_addrs[session]['counter'] = decrypted_packet[1:9]
+            self.server.sessions_addrs[session]['eth_ip'] = addr
             log.info('Пакет %i от %s', len(data), addr)
             os.write(self.tun, decrypted_packet)
 

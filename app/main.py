@@ -83,10 +83,10 @@ class WintunTunnel():
         log.info(f"Код ответа Windows API (Create IP): {result}")
     
     def _inject_packet(self, data):
-        getted_counter = struct.unpack('>Q', data[1:9])[0]
+        getted_counter = struct.unpack('>Q', data[5:13])[0]
         if self.rx_counter < getted_counter:
             self.rx_counter = getted_counter
-            nonce = b'\x00\x00\x00\x00' + data[1:9]
+            nonce = b'\x00\x00\x00\x00' + data[5:13]
             decoded_data = self.chacha.decrypt(nonce, data[13:], None)
             send_ptr = wintun.WintunAllocateSendPacket(self.session, len(decoded_data))
             ffi.memmove(send_ptr, decoded_data, len(decoded_data))
