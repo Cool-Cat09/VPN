@@ -1,9 +1,14 @@
 from cdef import kernel, iphlp, wintun, ffi
-import logging
-import ipaddress
-import socket
-import asyncio
+
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from asyncio.exceptions import CancelledError
+import ipaddress
+import logging
+import asyncio
+import socket
+import struct
+import os
 
 
 log = logging.getLogger(__name__)
@@ -12,7 +17,6 @@ console_log = logging.StreamHandler()
 formatter = formatter = logging.Formatter("%(asctime)s - [%(name)s] - %(levelname)s - %(message)s")
 console_log.setFormatter(formatter)
 log.addHandler(console_log)
-
 
 def calculate_checksum(data):
     if len(data) % 2 == 1:
@@ -47,6 +51,12 @@ class WintunTunnel():
         self.transport = None
         self.async_loop = None
         self.running = False
+        self._handshake_future = None
+        self.current_token = None
+        self.chacha = None
+        self.session_id = None
+        self.tx_counter = 0 
+        self.rx_counter = 0
     
     def up(self):
         row = ffi.new('MIB_UNICASTIPADDRESS_ROW *')
@@ -73,10 +83,17 @@ class WintunTunnel():
         log.info(f"Код ответа Windows API (Create IP): {result}")
     
     def _inject_packet(self, data):
-        send_ptr = wintun.WintunAllocateSendPacket(self.session, len(data))
-        ffi.memmove(send_ptr, data, len(data))
-        wintun.WintunSendPacket(self.session, send_ptr)
-        log.info('Пакет получен.')
+        getted_counter = struct.unpack('>Q', data[1:9])[0]
+        if self.rx_counter < getted_counter:
+            self.rx_counter = getted_counter
+            nonce = b'\x00\x00\x00\x00' + data[1:9]
+            decoded_data = self.chacha.decrypt(nonce, data[13:], None)
+            send_ptr = wintun.WintunAllocateSendPacket(self.session, len(decoded_data))
+            ffi.memmove(send_ptr, decoded_data, len(decoded_data))
+            wintun.WintunSendPacket(self.session, send_ptr)
+            log.info('Пакет получен.')
+        else:
+            log.info('Попытка атаки!')
 
     def _process_outgoing_packet(self):
         packet_size = ffi.new('DWORD *')
@@ -84,11 +101,17 @@ class WintunTunnel():
             packet_addr = wintun.WintunReceivePacket(self.session, packet_size)
             if packet_addr == ffi.NULL or packet_addr is None:
                 break
-            packet_bytes = bytearray(ffi.buffer(packet_addr, packet_size[0]))
+            packet_bytes = bytes(ffi.buffer(packet_addr, packet_size[0]))
             log.debug('Пакет %s перехвачен.', len(packet_bytes))
             wintun.WintunReleaseReceivePacket(self.session, packet_addr)
             if hasattr(self, 'transport') and self.transport is not None:
-                self.async_loop.call_soon_threadsafe(self.transport.sendto, bytes(packet_bytes), self.server_address)
+                counter = struct.pack('>Q', self.tx_counter)
+                nonce = b'\x00\x00\x00\x00' + counter
+                encrypted_packet = self.chacha.encrypt(nonce, packet_bytes, None)
+                packet_type = b'\x02'
+                udp_payload = packet_type + self.session_id + counter + encrypted_packet
+                self.tx_counter += 1
+                self.async_loop.call_soon_threadsafe(self.transport.sendto, udp_payload, self.server_address)
             else: 
                 log.info('Создание транспорта...')
                 pass
@@ -106,7 +129,28 @@ class WintunTunnel():
         try:
             self.up()
             self.transport, protocol = await self.async_loop.create_datagram_endpoint(lambda: VPNClientProtocol(self), local_addr=('0.0.0.0', 0))
-            await self.async_loop.run_in_executor(None, self._loop)
+            self._handshake_future = self.async_loop.create_future()
+            byted_token  = os.urandom(4)
+            numbered_token = struct.unpack('>I', byted_token)[0]
+            self.current_token = numbered_token
+            private_key = X25519PrivateKey.generate()
+            client_byted_public_key = private_key.public_key().public_bytes_raw()
+            handshake = b'\x01' + byted_token + client_byted_public_key
+            self.transport.sendto(handshake, self.server_address)
+            try:
+                decrypted_settings = await asyncio.wait_for(self._handshake_future, timeout=5.0)
+                if decrypted_settings[1:5] == byted_token:
+                    self.session_id = decrypted_settings[5:9]
+                    server_public_key_byted = decrypted_settings[9:41]
+                    server_public_key = X25519PublicKey.from_public_bytes(server_public_key_byted)
+                    shared_secret = private_key.exchange(server_public_key)
+                    self.chacha = ChaCha20Poly1305(shared_secret)
+                    os.system(f'New-NetIPAddress -InterfaceAlias {self.adapter_name} -IPAddress {decrypted_settings[41:]} -PrefixLength 16 -DefaultGateway 192.168.1.1')
+                    log.info('Сессия установлена.')
+                    await self.async_loop.run_in_executor(None, self._loop)
+            except asyncio.TimeoutError:
+                log.error('Превышено время ожидания, завершение сессии.')
+                return
         except KeyboardInterrupt, CancelledError:
             log.info('Завершение работы...')
         finally:
@@ -125,9 +169,8 @@ class WintunTunnel():
             wintun.WintunDeleteDriver()
         log.info('Очищено.')
 
-
 class VPNClientProtocol(asyncio.DatagramProtocol):
-    def __init__(self, tunnel):
+    def __init__(self, tunnel: WintunTunnel):
         self.tunnel = tunnel
         self.transport = None
     
@@ -136,9 +179,12 @@ class VPNClientProtocol(asyncio.DatagramProtocol):
         log.info('Сокет клиента инициализирован.')
     
     def datagram_received(self, data, addr):
-        self.tunnel.inject_packet(data)
+        if data[0:1] == b'\x03':
+            if self.tunnel._handshake_future and not self.tunnel._handshake_future.done():
+                self.tunnel._handshake_future.set_result(data)
+        else:
+            self.tunnel._inject_packet(data)
 
-tunnel = WintunTunnel(ip_address='10.0.0.2', prefix_lenght=24, server_ip='172.20.109.62', server_port=51820)
+tunnel = WintunTunnel(ip_address='10.0.0.2', prefix_lenght=16, server_ip='172.20.109.62', server_port=51820)
 
 asyncio.run(tunnel.run_loop())
-
