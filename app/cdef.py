@@ -66,9 +66,11 @@ ffi.cdef('''
         DWORD ScopeId;
         long long CreationTimestamp;
 } MIB_UNICASTIPADDRESS_ROW;
+    typedef int BOOL;
     DWORD CreateUnicastIpAddressEntry(MIB_UNICASTIPADDRESS_ROW *Row);
     void InitializeUnicastIpAddressEntry(MIB_UNICASTIPADDRESS_ROW *Row);
     extern DWORD WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds);
+    BOOL SetEvent(HANDLE hEvent);
     ''')
     
 wintun = ffi.dlopen('C://prj/VPN/wintun/bin/amd64/wintun.dll')

@@ -19,18 +19,6 @@ formatter = formatter = logging.Formatter("%(asctime)s - [%(name)s] - %(levelnam
 console_log.setFormatter(formatter)
 log.addHandler(console_log)
 
-def calculate_checksum(data):
-    if len(data) % 2 == 1:
-        data += b'\x00'
-    total = 0
-    for i in range(0, len(data), 2):
-        word = (data[i] << 8) + data[i+1]
-        total += word
-    while total >> 16:
-        total = (total & 0xffff) + (total >> 16)
-        
-    return (~total) & 0xffff
-
 class WintunTunnel():
     def __init__(
             self, 
@@ -74,7 +62,6 @@ class WintunTunnel():
 
         row.InterfaceLuid.Value = luid.Value
         row.Address.Ipv4.sin_family = 2
-        row.Address.Ipv4.sin_addr.S_un.S_addr = socket.htonl(int(self.ip_address))
         row.OnLinkPrefixLength = self.prefix_length
         row.SkipAsSource = 0
         row.ValidLifetime = 0xffffffff
@@ -87,6 +74,9 @@ class WintunTunnel():
         os.system('route add 128.0.0.0 mask 128.0.0.0 10.0.0.1')
     
     def _inject_packet(self, data):
+        if len(data) < 13:
+            log.info('Пакет поврежден.')
+            return
         getted_counter = struct.unpack('>Q', data[5:13])[0]
         if self.rx_counter <= getted_counter:
             self.rx_counter = getted_counter
@@ -109,7 +99,8 @@ class WintunTunnel():
             version = packet_bytes[0] >> 4
             if version != 4:
                 log.debug('Пришел пакет не IPv4.')
-                return
+                wintun.WintunReleaseReceivePacket(self.session, packet_addr)
+                continue
             log.debug(packet_bytes)
             log.debug('Пакет %s перехвачен.', len(packet_bytes))
             wintun.WintunReleaseReceivePacket(self.session, packet_addr)
@@ -131,6 +122,8 @@ class WintunTunnel():
         while self.running:
             if kernel.WaitForSingleObject(self.read_event, 100) == 0:
                 self._process_outgoing_packet()
+            if not self.running:
+                break
             else:
                 continue
                     
@@ -160,7 +153,6 @@ class WintunTunnel():
                     ip = socket.inet_ntoa(ip)
                     clean_ip = "".join(ip.split()).strip()
                     log.info(ip)
-                    os.system(f'netsh interface ipv4 delete address name=ValetVPN address=10.0.0.2')
                     set_command = f'netsh interface ipv4 set address name="ValetVPN" source=static {clean_ip} 255.255.0.0 10.0.0.1'
                     os.system('netsh interface ipv4 set dns name="ValetVPN" static 8.8.8.8')
                     subprocess.run(set_command, capture_output=True, text=True, shell=True)
@@ -169,7 +161,7 @@ class WintunTunnel():
             except asyncio.TimeoutError:
                 log.error('Превышено время ожидания, завершение сессии.')
                 return
-        except KeyboardInterrupt, CancelledError:
+        except (KeyboardInterrupt, CancelledError):
             log.info('Завершение работы...')
         finally:
             self.running = False
@@ -180,6 +172,9 @@ class WintunTunnel():
 
     def down(self):
         log.info('Очистка драйверов')
+        self.running = False
+        if hasattr(self, 'read_event') and self.read_event:
+            kernel.SetEvent(self.read_event)
         if hasattr(self, 'session') and self.session:
             wintun.WintunEndSession(self.session)
         if hasattr(self, 'adapter') and self.adapter:
@@ -201,7 +196,7 @@ class VPNClientProtocol(asyncio.DatagramProtocol):
             if self.tunnel._handshake_future and not self.tunnel._handshake_future.done():
                 self.tunnel._handshake_future.set_result(data)
         else:
-            self.tunnel._inject_packet(data)
+            self.tunnel.async_loop.run_in_executor(None, self.tunnel._inject_packet, data)
 
 tunnel = WintunTunnel(ip_address='10.0.0.2', prefix_lenght=16, server_ip='172.20.109.62', server_port=51820)
 

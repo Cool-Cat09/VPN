@@ -69,23 +69,26 @@ class Server():
         
         def _handle_run_read():
             log.debug('Вызов handle_run_read.')
-            data = os.read(tun, 2048)
-            log.info('Пакет %s получен', len(data))
-            client_addr = data[16:20]
-            session = self.clients_addrs.get(client_addr)
-            if session:
-                ip = session.get('eth_ip')
-                counter = struct.pack('>Q', session.get('tx_counter'))
-                session['tx_counter'] = session.get('tx_counter') + 1
-                chacha = session.get('chacha')
-                nonce = b'\x00\x00\x00\x00' + counter
-                encrypted_data = chacha.encrypt(nonce, data, None)
-                packet = b'\x02' + struct.pack('>I', session['session_id']) + counter + encrypted_data
-                transport.sendto(packet, ip)
-                log.info('Ответ отправлен по UDP обратно клиенту на %s.', ip)
-            else:
-                log.warning('Пакет из TUN получен, но адрес Windows-клиента еще неизвестен (нет входящих UDP сообщений).')
-
+            try:
+                data = os.read(tun, 2048)
+                log.info('Пакет %s получен', len(data))
+                client_addr = data[16:20]
+                session = self.clients_addrs.get(client_addr)
+                if session:
+                    ip = session.get('eth_ip')
+                    counter = struct.pack('>Q', session.get('tx_counter'))
+                    session['tx_counter'] = session.get('tx_counter') + 1
+                    chacha = session.get('chacha')
+                    nonce = b'\x00\x00\x00\x00' + counter
+                    encrypted_data = chacha.encrypt(nonce, data, None)
+                    packet = b'\x02' + struct.pack('>I', session['session_id']) + counter + encrypted_data
+                    transport.sendto(packet, ip)
+                    log.info('Ответ отправлен по UDP обратно клиенту на %s.', ip)
+                else:
+                    log.warning('Пакет из TUN получен, но адрес Windows-клиента еще неизвестен (нет входящих UDP сообщений).')
+            except BlockingIOError:
+                return
+            
         loop.add_reader(tun, _handle_run_read)
         
         try:
@@ -135,7 +138,8 @@ class VPNServerProtocol(asyncio.DatagramProtocol):
             session = struct.unpack('>I', byted_session)[0]
             encrypted_packet = data[13:]
             decrypted_packet = self.server.sessions_addrs[session]['chacha'].decrypt(nonce, encrypted_packet, None)
-            self.server.sessions_addrs[session]['counter'] = decrypted_packet[1:9]
+            counter = decrypted_packet[1:9]
+            self.server.sessions_addrs[session]['counter'] = counter
             self.server.sessions_addrs[session]['eth_ip'] = addr
             log.debug(f'Расшифрованный пакет: {decrypted_packet}')
             log.info('Пакет %i от %s', len(data), addr)
