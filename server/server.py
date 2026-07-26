@@ -139,6 +139,9 @@ class VPNServerProtocol(asyncio.DatagramProtocol):
             encrypted_packet = data[13:]
             decrypted_packet = self.server.sessions_addrs[session]['chacha'].decrypt(nonce, encrypted_packet, None)
             counter = decrypted_packet[1:9]
+            if counter == self.server.sessions_addrs[session]['counter']:
+                log.debug('Повторный пакет.')
+                return
             self.server.sessions_addrs[session]['counter'] = counter
             self.server.sessions_addrs[session]['eth_ip'] = addr
             log.debug(f'Расшифрованный пакет: {decrypted_packet}')
