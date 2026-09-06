@@ -75,6 +75,6 @@ ffi.cdef('''
     ''')
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 dll_path = os.path.join(BASE_DIR, "wintun", "bin", "amd64", "wintun.dll")
-wintun = ffi.dlopen('./wintun/bin/amd64/wintun.dll')
+wintun = ffi.dlopen(dll_path)
 iphlp = ffi.dlopen('IPHLPAPI.dll')
 kernel = ffi.dlopen('kernel32.dll')
