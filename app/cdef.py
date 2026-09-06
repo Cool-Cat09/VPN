@@ -73,6 +73,6 @@ ffi.cdef('''
     BOOL SetEvent(HANDLE hEvent);
     ''')
     
-wintun = ffi.dlopen('C://prj/VPN/wintun/bin/amd64/wintun.dll')
+wintun = ffi.dlopen('./wintun/bin/amd64/wintun.dll')
 iphlp = ffi.dlopen('IPHLPAPI.dll')
 kernel = ffi.dlopen('kernel32.dll')
