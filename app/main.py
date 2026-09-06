@@ -240,10 +240,10 @@ class VPNClientProtocol(asyncio.DatagramProtocol):
         else:
             self.tunnel.async_loop.run_in_executor(None, self.tunnel._inject_packet, data)
 
-tunnel = WintunTunnel(prefix_lenght=16, server_ip=os.getenv('SERVER_IP'), server_port=int(os.getenv('SERVER_PORT')))
 
 if __name__ == '__main__':
     try:
+        tunnel = WintunTunnel(prefix_lenght=16, server_ip=os.getenv('SERVER_IP'), server_port=int(os.getenv('SERVER_PORT')))
         asyncio.run(tunnel.run_loop())
     except KeyboardInterrupt:
         log.info('Работа завершена.')
