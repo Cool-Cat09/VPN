@@ -24,3 +24,12 @@ jobs:
 
       - name: Run tests
         run: uv run pytest
+              - name: Run tests
+        run: uv run pytest
+        env:
+          SERVER_IP: "127.0.0.1"
+          SERVER_PORT: "8080"
+          PRIVATE_KEY_PATH: "/tests/keys/private_key.pem"
+          PUBLIC_KEY_PATH: "/tests/keys/public_key.pem"
+          SERVER_PUBLIC_KEY: "/tests/keys/server_private_key.pem"
+          
