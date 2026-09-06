@@ -1,4 +1,5 @@
 from cffi import FFI
+import os
 
 
 ffi = FFI()
@@ -72,7 +73,8 @@ ffi.cdef('''
     extern DWORD WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds);
     BOOL SetEvent(HANDLE hEvent);
     ''')
-    
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+dll_path = os.path.join(BASE_DIR, "wintun", "bin", "amd64", "wintun.dll")
 wintun = ffi.dlopen('./wintun/bin/amd64/wintun.dll')
 iphlp = ffi.dlopen('IPHLPAPI.dll')
 kernel = ffi.dlopen('kernel32.dll')
