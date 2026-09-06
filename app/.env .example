@@ -1,0 +1,5 @@
+PRIVATE_KEY_PATH=C:\prj\VPN\app\keys_X25519\private_key.pem
+PUBLIC_KEY_PATH=C:\prj\VPN\app\keys_X25519\public_key.pem
+SERVER_PUBLIC_KEY=C:\prj\VPN\app\keys_X25519\server_public_key.pem
+SERVER_IP='172.20.109.62'
+SERVER_PORT=51820

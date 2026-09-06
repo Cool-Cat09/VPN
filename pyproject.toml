@@ -1,10 +1,17 @@
-[project]
-name = "vpn"
-version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
-requires-python = ">=3.14"
-dependencies = [
-    "cffi>=2.1.0",
-    "cryptography>=49.0.0",
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["server", "app"]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "app"]
+asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-mock>=3.15.1",
 ]
+

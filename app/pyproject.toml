@@ -1,0 +1,12 @@
+[project]
+name = "app"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "cffi>=2.1.1",
+    "cryptography>=50.0.1",
+    "dotenv>=0.9.9",
+    "ipaddress>=1.0.23",
+]
